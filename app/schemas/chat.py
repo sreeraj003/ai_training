@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class ChatRequest(BaseModel):
+    session_id: str
     message: str = Field(
         min_length=1,
         max_length=2000,
@@ -19,4 +20,4 @@ class ChatRequest(BaseModel):
         return value
 class ChatResponse(BaseModel):
     received_question: str
-    message: str
+    ai_response: str

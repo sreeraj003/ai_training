@@ -11,5 +11,5 @@ router = APIRouter(
 
 
 @router.post("/",response_model=ChatResponse    )
-def chat(request: ChatRequest):
-    return process_message(request.message)
+async def chat(request: ChatRequest):
+    return await process_message(request)
