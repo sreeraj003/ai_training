@@ -1,14 +1,27 @@
 from app.core.config import settings
 from app.schemas.chat import ChatRequest
 from app.services.ai_client import async_client
-from app.services.chat_session_manager import ChatSessionManager 
+from app.services.chat_session_manager import ChatSessionManager
+from app.services.token_manager import TokenManager 
 sessionManager = ChatSessionManager()
+
+sessionManager = ChatSessionManager()
+tokenManager = TokenManager()
+
 async def process_message(request: ChatRequest):
     session = None
+    
     if(request.session_id not in sessionManager.session):
         sessionManager.create_session(request.session_id) 
+    
     session = sessionManager.get_session(request.session_id)
     session.add_user_message(request.message)
+    
+    session.trim_history(
+    max_tokens=25000,
+    token_manager=tokenManager
+    )
+
     try:
         messages=session.get_messages()
         completion = await async_client.chat.completions.create(
