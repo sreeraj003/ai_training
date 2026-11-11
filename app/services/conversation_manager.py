@@ -1,3 +1,6 @@
+import json
+
+
 class ConversationManager:
 
     SYSTEM_MESSAGE = {
@@ -33,4 +36,22 @@ class ConversationManager:
             if len(self.messages) <= 1:
                 break
 
-            del self.messages[1:3]
+            del self.messages[1:3] 
+    def add_memory_to_system_message(self, memory: dict):
+
+        messages = self.get_messages()
+
+        memory_str = json.dumps(memory, indent=2)
+
+        system_message_content = (
+            f"{self.SYSTEM_MESSAGE['content']}\n\n"
+            "Current Memory:\n"
+            f"{memory_str}"
+        )
+
+        messages[0]["content"] = system_message_content
+
+        return messages
+    def remove_last_user_message(self):
+        if len(self.messages) > 1 and self.messages[-1]["role"] == "user":
+            self.messages.pop()

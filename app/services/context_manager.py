@@ -15,3 +15,12 @@ class ContextManager:
 
         total_tokens = self.token_manager.count_messages_tokens(messages)
         return total_tokens <= self.get_input_budget()
+    
+    def trim_msg(self,message:list)->list:
+        system_msg = message[0]
+        remaining_msgs = message[1:]
+        while not self.fits_context_window([system_msg]+remaining_msgs):
+            if(len(remaining_msgs)<=1):
+                raise ValueError("mesage length exceeds context window")
+            del remaining_msgs[:2]
+        return [system_msg]+remaining_msgs

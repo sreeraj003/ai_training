@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from app.api.routes import chat, health
 from app.services.chat_session_manager import ChatSessionManager
+from app.api.routes import stream_chat
 
 
 app = FastAPI(
@@ -12,6 +13,7 @@ app = FastAPI(
 
 app.include_router(chat.router)
 app.include_router(health.router)
+app.include_router(stream_chat.router)
 
 
 @app.get("/")
