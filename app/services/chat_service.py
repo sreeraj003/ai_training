@@ -1,6 +1,6 @@
 
 import logging
-
+import asyncio
 from app.core.config import settings
 from app.schemas.chat import ChatRequest
 from app.services.ai_client import async_client
@@ -9,6 +9,7 @@ from app.services.memory_update_processor import MemoryUpdateProcessor
 from app.services.token_manager import TokenManager
 from app.services.context_manager import ContextManager
 from app.services.MemoryExtractor import MemoryExtractor
+from app.services.streaming_service import stream_ai_response
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,6 @@ session_manager = ChatSessionManager()
 token_manager = TokenManager()
 
 memory_extractor = MemoryExtractor(async_client)
-
 context_manager = ContextManager(
     token_manager=token_manager,
     context_limit=32000,
@@ -25,23 +25,71 @@ context_manager = ContextManager(
 )
 
 
+
 async def process_message(request: ChatRequest):
 
     if request.session_id not in session_manager.session:
         session_manager.create_session(request.session_id)
 
-    conversation = session_manager.get_conversation(
-        request.session_id
-    )
+    lock = session_manager.get_lock(request.session_id)
 
-    memory = session_manager.get_memory(
-        request.session_id
-    )
+    async with lock:
+        conversation = session_manager.get_conversation(request.session_id)
+        memory = session_manager.get_memory(request.session_id)
 
-    conversation.add_user_message(request.message)
+        conversation.add_user_message(request.message)
 
-    try:
-        # Stage 1: Generate assistant response
+        try:
+            messages = conversation.add_memory_to_system_message(
+                memory.get_summary()
+            )
+
+            trimmed_messages = context_manager.trim_msg(messages)
+
+            completion = await async_client.chat.completions.create(
+                model=settings.NVIDIA_MODEL,
+                messages=trimmed_messages,
+                max_tokens=1000,
+                temperature=0.7
+            )
+
+            ai_response = completion.choices[0].message.content or ""
+            conversation.add_assistant_message(ai_response)
+
+        except Exception:
+            if conversation.messages and conversation.messages[-1]["role"] == "user":
+                conversation.remove_last_user_message()
+            raise
+
+        try:
+            extraction_response = await memory_extractor.extract_memories(
+                conversation.get_messages(),
+                memory.get_summary()
+            )
+
+            MemoryUpdateProcessor(memory).apply_updates(extraction_response)
+
+        except Exception:
+            logger.exception("Memory extraction or update failed")
+
+        return {
+            "received_question": request.message,
+            "ai_response": ai_response
+        }
+
+
+
+async def process_stream_message(request: ChatRequest):
+
+    if request.session_id not in session_manager.session:
+        session_manager.create_session(request.session_id)
+
+    lock = session_manager.get_lock(request.session_id)
+    async with lock:
+        conversation = session_manager.get_conversation(request.session_id)
+        memory = session_manager.get_memory(request.session_id)
+
+        conversation.add_user_message(request.message)
 
         messages = conversation.add_memory_to_system_message(
             memory.get_summary()
@@ -49,41 +97,36 @@ async def process_message(request: ChatRequest):
 
         trimmed_messages = context_manager.trim_msg(messages)
 
-        completion = await async_client.chat.completions.create(
-            model=settings.NVIDIA_MODEL,
-            messages=trimmed_messages,
-            max_tokens=1000,
-            temperature=0.7
-        )
+        response_chunks = []
 
-        ai_response = completion.choices[0].message.content or ""
+        try:
+            async for chunk in stream_ai_response(trimmed_messages):
+                response_chunks.append(chunk)
+                yield chunk
 
-        conversation.add_assistant_message(ai_response)
+        except asyncio.CancelledError:
+            if conversation.messages and conversation.messages[-1]["role"] == "user":
+                conversation.remove_last_user_message()
+            raise
 
-    except Exception:
-        # Roll back only the failed chat operation.
-        if conversation.messages and conversation.messages[-1]["role"] == "user":
-            conversation.remove_last_user_message()
+        except Exception:
+            if conversation.messages and conversation.messages[-1]["role"] == "user":
+                conversation.remove_last_user_message()
+            raise
 
-        raise
+        full_response = "".join(response_chunks)
 
-    # Stage 2: Memory extraction
-    # Memory failure must not invalidate the successful chat response.
+        conversation.add_assistant_message(full_response)
 
-    try:
-        extraction_response = await memory_extractor.extract_memories(
-            conversation.get_messages(),
-            memory.get_summary()
-        )
+        # Extract memory only after successful generation
+        try:
+            extraction_response = await memory_extractor.extract_memories(
+                conversation.get_messages(),
+                memory.get_summary()
+            )
 
-        processor = MemoryUpdateProcessor(memory)
+            processor = MemoryUpdateProcessor(memory)
+            processor.apply_updates(extraction_response)
 
-        processor.apply_updates(extraction_response)
-
-    except Exception:
-        logger.exception("Memory extraction or update failed")
-
-    return {
-        "received_question": request.message,
-        "ai_response": ai_response
-    }
+        except Exception:
+            logger.exception("Streaming memory extraction failed")
